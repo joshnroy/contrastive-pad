@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+*.pt
+wandb/
+*.log
+tags

@@ -39,6 +39,7 @@ def make_agent(obs_shape, action_shape, args):
         num_shared_layers=args.num_shared_layers,
         num_filters=args.num_filters,
         curl_latent_dim=args.curl_latent_dim,
+        use_barlow=args.use_barlow,
     )
 
 
@@ -164,6 +165,21 @@ class RotFunction(nn.Module):
         return self.trunk(h)
 
 
+class BarlowFunction(nn.Module):
+    """MLP for rotation prediction."""
+    def __init__(self, obs_dim, hidden_dim):
+        super().__init__()
+
+        self.trunk = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, 4)
+        )
+
+    def forward(self, h):
+        return self.trunk(h)
+
+
 class InvFunction(nn.Module):
     """MLP for inverse dynamics model."""
     def __init__(self, obs_dim, action_dim, hidden_dim):
@@ -274,6 +290,7 @@ class SacSSAgent(object):
         num_shared_layers=4,
         num_filters=32,
         curl_latent_dim=128,
+        use_barlow=False,
     ):
         self.discount = discount
         self.critic_tau = critic_tau
@@ -336,6 +353,13 @@ class SacSSAgent(object):
             if use_inv:
                 self.inv = InvFunction(encoder_feature_dim, action_shape[0], hidden_dim).cuda()
                 self.inv.apply(weight_init)
+
+            if use_barlow:
+                self.barlow = BarlowFunction(encoder_feature_dim, hidden_dim).cuda()
+                self.barlow.apply(weight_init)
+                # TODO: Implement Augmentations
+                self.augs1 = 
+                self.augs2 = 
             
         # curl
         if use_curl:
@@ -369,6 +393,10 @@ class SacSSAgent(object):
         if self.use_rot:
             self.rot_optimizer =  torch.optim.Adam(
                 self.rot.parameters(), lr=ss_lr
+            )
+        if self.use_barlow:
+            self.barlow_optimizer =  torch.optim.Adam(
+                self.barlow.parameters(), lr=ss_lr
             )
         if self.use_inv:
             self.inv_optimizer =  torch.optim.Adam(
@@ -483,6 +511,30 @@ class SacSSAgent(object):
             L.log('train_rot/rot_loss', rot_loss, step)
 
         return rot_loss.item()
+
+    def update_barlow(self, obs, L=None, step=None):
+        assert obs.shape[-1] == 84
+
+        aug_obs1 = utils.aug(obs, self.augs1)
+        aug_obs2 = utils.aug(obs, self.augs2)
+        h1 = self.ss_encoder(aug_obs1)
+        h2 = self.ss_encoder(aug_obs2)
+        pred1 = self.barlow(h1)
+        pred2 = self.barlow(h2)
+
+        barlow_loss = ... # TODO: Implement Barlow Loss
+
+        self.encoder_optimizer.zero_grad()
+        self.barlow_optimizer.zero_grad()
+        barlow_loss.backward()
+
+        self.encoder_optimizer.step()
+        self.barlow_optimizer.step()
+
+        if L is not None:
+            L.log('train_barlow/barlow_loss', barlow_loss, step)
+
+        return barlow_loss.item()
 
     def update_inv(self, obs, next_obs, action, L=None, step=None):
         assert obs.shape[-1] == 84 and next_obs.shape[-1] == 84

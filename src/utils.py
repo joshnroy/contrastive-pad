@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import os
 import random
+import torchvision.transforms as T
 
 
 class eval_mode(object):
@@ -157,6 +158,19 @@ def rotate(x):
 		images.append(img.unsqueeze(0))
 
 	return torch.cat(images), labels
+
+def aug(x: torch.Tensor, augs: torch.nn.Module) -> torch.Tensor:
+	"""Randomly apply augmentations for barlow twins to each image
+
+	Args:
+		x (torch.Tensor): The input images (observations)
+		augs (torch.nn.Module): The augmentations to apply
+
+	Returns:
+		torch.Tensor: The augmented observations
+	"""
+
+	return augs(x)
 
 
 def random_crop_cuda(x, size=84, w1=None, h1=None, return_w1_h1=False):

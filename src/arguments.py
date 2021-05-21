@@ -70,6 +70,8 @@ def parse_args():
 	parser.add_argument('--pad_batch_size', default=32, type=int)
 	parser.add_argument('--pad_num_episodes', default=100, type=int)
 
+	parser.add_argument('--group', default='pad_debug', type=str)
+
 	args = parser.parse_args()
 
 	assert args.mode in {'train', 'color_easy', 'color_hard'} or 'video' in args.mode, f'unrecognized mode "{args.mode}"'

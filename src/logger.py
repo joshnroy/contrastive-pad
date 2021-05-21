@@ -6,6 +6,7 @@ import shutil
 import torch
 import torchvision
 import numpy as np
+import wandb
 from termcolor import colored
 
 FORMAT_CONFIG = {
@@ -60,6 +61,9 @@ class MetersGroup(object):
         with open(self._file_name, 'a') as f:
             f.write(json.dumps(data) + '\n')
 
+    def _dump_to_wandb(self, data):
+        wandb.log(data)
+
     def _format(self, key, value, ty):
         template = '%s: '
         if ty == 'int':
@@ -87,6 +91,7 @@ class MetersGroup(object):
         data['step'] = step
         self._dump_to_file(data)
         self._dump_to_console(data, prefix)
+        self._dump_to_wandb(data)
         self._meters.clear()
 
 

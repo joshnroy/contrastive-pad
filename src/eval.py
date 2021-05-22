@@ -121,7 +121,7 @@ def main(args):
 
 	# Evaluate agent with PAD (if applicable)
 	pad_reward = None
-	if args.use_inv or args.use_curl or args.use_rot:
+	if args.use_inv or args.use_curl or args.use_rot or args.use_barlow:
 		env = init_env(args)
 		print(f'Policy Adaptation during Deployment of {args.work_dir} for {args.pad_num_episodes} episodes (mode: {args.mode})')
 		pad_reward = evaluate(env, agent, args, video, adapt=True)

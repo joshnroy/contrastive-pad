@@ -1,12 +1,41 @@
+from kornia import augmentation
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as T
+import kornia as K
+from PIL import Image, ImageFilter, ImageOps
+import random
+
+from torchvision.transforms.transforms import Normalize
 
 import utils
 from agent.encoder import make_encoder
 
 LOG_FREQ = 10000
+
+class GaussianBlur(object):
+    def __init__(self, p):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            sigma = random.random() * 1.9 + 0.1
+            return img.filter(ImageFilter.GaussianBlur(sigma))
+        else:
+            return img
+
+
+class Solarization(object):
+    def __init__(self, p):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return ImageOps.solarize(img)
+        else:
+            return img
 
 
 def make_agent(obs_shape, action_shape, args):
@@ -167,17 +196,25 @@ class RotFunction(nn.Module):
 
 class BarlowFunction(nn.Module):
     """MLP for rotation prediction."""
-    def __init__(self, obs_dim, hidden_dim):
+    def __init__(self, obs_dim, hidden_dim, out_dim):
         super().__init__()
 
         self.trunk = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim), nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
-            nn.Linear(hidden_dim, 4)
+            nn.Linear(obs_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim)
         )
+
+        self.bn = nn.BatchNorm1d(out_dim, affine=False)
 
     def forward(self, h):
         return self.trunk(h)
+
+    def off_diagonal(self, x):
+        n, m = x.shape
+        assert n == m
+        return x.flatten()[:-1].view(n-1, n + 1)[:, 1:].flatten()
 
 
 class InvFunction(nn.Module):
@@ -301,6 +338,7 @@ class SacSSAgent(object):
         self.use_rot = use_rot
         self.use_inv = use_inv
         self.use_curl = use_curl
+        self.use_barlow = use_barlow
         self.curl_latent_dim = curl_latent_dim
 
         assert num_layers >= num_shared_layers, 'num shared layers cannot exceed total amount'
@@ -337,7 +375,7 @@ class SacSSAgent(object):
         self.curl = None
         self.ss_encoder = None
 
-        if use_rot or use_inv:
+        if use_rot or use_inv or use_barlow:
             self.ss_encoder = make_encoder(
                 obs_shape, encoder_feature_dim, num_layers,
                 num_filters, num_shared_layers
@@ -355,11 +393,46 @@ class SacSSAgent(object):
                 self.inv.apply(weight_init)
 
             if use_barlow:
-                self.barlow = BarlowFunction(encoder_feature_dim, hidden_dim).cuda()
+                self.barlow = BarlowFunction(encoder_feature_dim, hidden_dim, out_dim=2048).cuda()
                 self.barlow.apply(weight_init)
-                # TODO: Implement Augmentations
-                self.augs1 = 
-                self.augs2 = 
+                self.augs1 = nn.Sequential(
+                    K.augmentation.RandomResizedCrop((84, 84)),
+                    # K.augmentation.RandomHorizontalFlip(p=0.5),
+                    K.augmentation.ColorJitter(p=0.8, brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1),
+                    K.augmentation.RandomGrayscale(p=0.2),
+                    # K.augmentation.GaussianBlur(p=1.0),
+                    K.augmentation.RandomSolarize(p=0.0),
+                    K.augmentation.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]).cuda(), std=torch.tensor([0.229, 0.224, 0.225]).cuda())
+                )
+                self.augs2 = nn.Sequential(
+                    K.augmentation.RandomResizedCrop((84, 84)),
+                    # K.augmentation.RandomHorizontalFlip(p=0.5),
+                    K.augmentation.ColorJitter(p=0.8, brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1),
+                    K.augmentation.RandomGrayscale(p=0.2),
+                    # K.augmentation.GaussianBlur(p=0.1),
+                    K.augmentation.RandomSolarize(p=0.2),
+                    K.augmentation.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]).cuda(), std=torch.tensor([0.229, 0.224, 0.225]).cuda())
+                )
+                # self.augs1 = T.Compose([
+                    # T.RandomResizedCrop(84),
+                    # T.RandomHorizontalFlip(p=0.5),
+                    # T.RandomApply([T.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
+                    # T.RandomGrayscale(p=0.2),
+                    # # GaussianBlur(p=1.0),
+                    # lambda x: T.solarize(x, p=0.2),
+                    # # T.ToTensor(),
+                    # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                # ])
+                # self.augs2 = T.Compose([
+                    # T.RandomResizedCrop(84),
+                    # T.RandomHorizontalFlip(p=0.5),
+                    # T.RandomApply([T.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
+                    # T.RandomGrayscale(p=0.2),
+                    # # GaussianBlur(p=0.1),
+                    # lambda x: T.solarize(x, p=0.2),
+                    # # T.ToTensor(),
+                    # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                # ])
             
         # curl
         if use_curl:
@@ -512,17 +585,23 @@ class SacSSAgent(object):
 
         return rot_loss.item()
 
-    def update_barlow(self, obs, L=None, step=None):
+    def update_barlow(self, obs, temporal_obs, L=None, step=None):
         assert obs.shape[-1] == 84
 
-        aug_obs1 = utils.aug(obs, self.augs1)
-        aug_obs2 = utils.aug(obs, self.augs2)
+        aug_obs1 = torch.cat([utils.aug(obs[:, i:i+3, :, :], self.augs1) for i in [0, 3, 6]], dim=1)
+        aug_obs2 = torch.cat([utils.aug(obs[:, i:i+3, :, :], self.augs2) for i in [0, 3, 6]], dim=1)
         h1 = self.ss_encoder(aug_obs1)
         h2 = self.ss_encoder(aug_obs2)
-        pred1 = self.barlow(h1)
-        pred2 = self.barlow(h2)
+        z1 = self.barlow(h1)
+        z2 = self.barlow(h2)
 
-        barlow_loss = ... # TODO: Implement Barlow Loss
+        c = self.barlow.bn(z1).T @ self.barlow.bn(z2)
+        c.div_(obs.shape[0]) # divide by the batch size
+
+        on_diag = torch.diagonal(c).add_(-1).pow(2).sum()
+        off_diag = self.barlow.off_diagonal(c).pow_(2).sum()
+
+        barlow_loss = on_diag + 5e-3 * off_diag
 
         self.encoder_optimizer.zero_grad()
         self.barlow_optimizer.zero_grad()
@@ -614,6 +693,9 @@ class SacSSAgent(object):
 
         if self.inv is not None and step % self.ss_update_freq == 0:
             self.update_inv(obs, next_obs, action, L, step)
+
+        if self.barlow is not None and step % self.ss_update_freq == 0:
+            self.update_barlow(obs, next_obs, L, step)
 
         if self.curl is not None and step % self.ss_update_freq == 0:
             obs_anchor, obs_pos = curl_kwargs["obs_anchor"], curl_kwargs["obs_pos"]

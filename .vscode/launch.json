@@ -18,7 +18,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/src/train.py",
             "console": "integratedTerminal",
-            "args": ["--domain_name=cartpole", "--task_name=balance", "--action_repeat=8", "--mode=train", "--use_barlow", "--num_shared_layers=8", "--seed=0", "--work_dir=logs/cartpole_balance/inv/0", "--pad_checkpoint=500k", "--group=cartpole_balance_pad", "--train_steps=10000"]
+            "args": ["--domain_name=cartpole", "--task_name=balance", "--action_repeat=8", "--mode=train", "--use_barlow", "--num_shared_layers=8", "--seed=0", "--work_dir=logs/cartpole_balance/inv/0", "--pad_checkpoint=500k", "--group=cartpole_balance_barlow", "--train_steps=10000", "--hidden_dim=512"]
         },
     ]
 }
